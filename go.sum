@@ -338,8 +338,8 @@ github.com/DataDog/datadog-agent/pkg/util/common v0.77.0-devel.0.20260213154712-
 github.com/DataDog/datadog-agent/pkg/util/common v0.77.0-devel.0.20260213154712-e02b9359151a/go.mod h1:kyL9IdKFxr9Q3km1+3JnU4uOvxcqfBzVoDUdJ4xQ2Jw=
 github.com/DataDog/datadog-agent/pkg/util/compression v0.77.0-devel.0.20260213154712-e02b9359151a h1:1E3wujwiiLqwU/KqWmrZnSkAC9Id7l/SaBGqnS/g7C0=
 github.com/DataDog/datadog-agent/pkg/util/compression v0.77.0-devel.0.20260213154712-e02b9359151a/go.mod h1:AvUV9aV1NQKgeztXEBJ2VML8auV5BDf4HEaJl+2nW3g=
-github.com/DataDog/datadog-agent/pkg/util/defaultpaths v0.69.3 h1:QtQvF++ulP9d6Rhfl2yqiOc6lYjjRaO9Iz4ai2/EKQk=
-github.com/DataDog/datadog-agent/pkg/util/defaultpaths v0.69.3/go.mod h1:2ak5dz/IYg1vIx0ruCbJWHnFDCyyHtUgVts0CfBCe4Q=
+github.com/DataDog/datadog-agent/pkg/util/defaultpaths v0.64.0-devel h1:RIKbeFWoz0pNR14O2RWMmvcJ//VQeJK3L9v/y93M4HE=
+github.com/DataDog/datadog-agent/pkg/util/defaultpaths v0.64.0-devel/go.mod h1:2o49+wHcks97lVSdK4BQllo5UZgbmASgqgK882Gg9GY=
 github.com/DataDog/datadog-agent/pkg/util/executable v0.77.0-devel.0.20260213154712-e02b9359151a h1:BATbSdslZluu6dtf09jyppKuSPjzlasbK/Sg8KTLXrw=
 github.com/DataDog/datadog-agent/pkg/util/executable v0.77.0-devel.0.20260213154712-e02b9359151a/go.mod h1:QXzVybjl04kzXQPbSR05owymjNXL2T5kkx2bUDhIiDw=
 github.com/DataDog/datadog-agent/pkg/util/filesystem v0.77.0-devel.0.20260213154712-e02b9359151a h1:paG9oPCmJNyoq2yBt9MVRD3LovHHlDkyC7fM6XZViYc=
@@ -2705,8 +2705,8 @@ go.opentelemetry.io/contrib/bridges/otelzap v0.15.0 h1:x4qzjKkTl2hXmLl+IviSXvzaT
 go.opentelemetry.io/contrib/bridges/otelzap v0.15.0/go.mod h1:h7dZHJgqkzUiKFXCTJBrPWH0LEZaZXBFzKWstjWBRxw=
 go.opentelemetry.io/contrib/bridges/prometheus v0.61.0 h1:RyrtJzu5MAmIcbRrwg75b+w3RlZCP0vJByDVzcpAe3M=
 go.opentelemetry.io/contrib/bridges/prometheus v0.61.0/go.mod h1:tirr4p9NXbzjlbruiRGp53IzlYrDk5CO2fdHj0sSSaY=
-go.opentelemetry.io/contrib/detectors/gcp v1.39.0 h1:kWRNZMsfBHZ+uHjiH4y7Etn2FK26LAGkNFw7RHv1DhE=
-go.opentelemetry.io/contrib/detectors/gcp v1.39.0/go.mod h1:t/OGqzHBa5v6RHZwrDBJ2OirWc+4q/w2fTbLZwAKjTk=
+go.opentelemetry.io/contrib/detectors/gcp v1.43.0 h1:62yY3dT7/ShwOxzA0RsKRgshBmfElKI4d/Myu2OxDFU=
+go.opentelemetry.io/contrib/detectors/gcp v1.43.0/go.mod h1:RyaZMFY7yi1kAs45S6mbFGz8O8rqB0dTY14uzvG4LCs=
 go.opentelemetry.io/contrib/exporters/autoexport v0.61.0 h1:XfzKtKSrbtYk9TNCF8dkO0Y9M7IOfb4idCwBOTwGBiI=
 go.opentelemetry.io/contrib/exporters/autoexport v0.61.0/go.mod h1:N6otC+qXTD5bAnbK2O1f/1SXq3cX+3KYSWrkBUqG0cw=
 go.opentelemetry.io/contrib/instrumentation/github.com/gorilla/mux/otelmux v0.45.0 h1:CaagQrotQLgtDlHU6u9pE/Mf4mAwiLD8wrReIVt06lY=
