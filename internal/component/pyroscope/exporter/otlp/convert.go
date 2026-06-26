@@ -88,7 +88,7 @@ type lookupTables struct {
 	lastStackTableIdx int32
 }
 
-func convertPprofToOTLPRequest(src *profile.Profile) (*collectorprofilespb.ExportProfilesServiceRequest, error) {
+func convertPprofToOTLPRequest(src *profile.Profile, pyroscopeProfileName string) (*collectorprofilespb.ExportProfilesServiceRequest, error) {
 	if err := src.CheckValid(); err != nil {
 		return nil, fmt.Errorf("%w: %w", err, errInvalPprof)
 	}
@@ -191,14 +191,30 @@ func convertPprofToOTLPRequest(src *profile.Profile) (*collectorprofilespb.Expor
 		// pprof.Profile.duration_nanos
 		p.DurationNano = uint64(src.DurationNanos)
 
+		periodType := ""
+		periodUnit := ""
+		if src.PeriodType != nil {
+			periodType = src.PeriodType.Type
+			periodUnit = src.PeriodType.Unit
+		}
+		if periodType == "" && pyroscopeProfileName != "" {
+			periodType = pyroscopeProfileName
+		}
+		if periodType != "" && periodUnit == "" {
+			periodUnit = st.Unit
+		}
+
 		// pprof.Profile.period_type
 		p.PeriodType = &profilespb.ValueType{
-			TypeStrindex: lts.getIdxForString(src.PeriodType.Type),
-			UnitStrindex: lts.getIdxForString(src.PeriodType.Unit),
+			TypeStrindex: lts.getIdxForString(periodType),
+			UnitStrindex: lts.getIdxForString(periodUnit),
 		}
 
 		// pprof.Profile.period
 		p.Period = src.Period
+		if p.Period == 0 && periodType != "" {
+			p.Period = 1
+		}
 
 		// pprof.Profile.default_sample_type
 		// As OTLP profiles use a single Sample Type, it is implicit its default type.

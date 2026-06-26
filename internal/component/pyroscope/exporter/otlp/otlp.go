@@ -23,6 +23,7 @@ import (
 )
 
 const defaultTimeout = 10 * time.Second
+const pyroscopeProfileNameLabel = "__name__"
 
 var (
 	_ pyroscope.Appendable = (*otlpExporter)(nil)
@@ -172,7 +173,7 @@ func (e *otlpExporter) rawSampleToProfiles(raw []byte, lbs labels.Labels) (*coll
 	if err != nil {
 		return nil, fmt.Errorf("parse pprof profile: %w", err)
 	}
-	req, err := convertPprofToOTLPRequest(pprofProfile)
+	req, err := convertPprofToOTLPRequest(pprofProfile, lbs.Get(pyroscopeProfileNameLabel))
 	if err != nil {
 		return nil, fmt.Errorf("convert pprof to otlp profiles: %w", err)
 	}
