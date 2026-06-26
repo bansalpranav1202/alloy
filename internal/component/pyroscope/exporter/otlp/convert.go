@@ -12,9 +12,11 @@ import (
 	"strings"
 
 	"github.com/google/pprof/profile"
-	"go.opentelemetry.io/collector/pdata/pcommon"
-	"go.opentelemetry.io/collector/pdata/pprofile"
 	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
+	collectorprofilespb "go.opentelemetry.io/proto/otlp/collector/profiles/v1development"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	profilespb "go.opentelemetry.io/proto/otlp/profiles/v1development"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 )
 
 var (
@@ -30,14 +32,14 @@ const (
 	noAttrUnit = int32(-1)
 )
 
-// attr is a helper struct to build pprofile.ProfilesDictionary.attribute_table.
+// attr is a helper struct to build profilespb.ProfilesDictionary.attribute_table.
 type attr struct {
 	keyStrIdx  int32
 	value      any
 	unitStrIdx int32
 }
 
-// fn is a helper struct to build pprofile.ProfilesDictionary.function_table.
+// fn is a helper struct to build profilespb.ProfilesDictionary.function_table.
 type fn struct {
 	name       string
 	systemName string
@@ -45,7 +47,7 @@ type fn struct {
 	startLine  int64
 }
 
-// mm is a helper struct to build pprofile.ProfilesDictionary.mapping_table.
+// mm is a helper struct to build profilespb.ProfilesDictionary.mapping_table.
 type mm struct {
 	memoryStart    uint64
 	memoryLimit    uint64
@@ -54,7 +56,7 @@ type mm struct {
 	attrIdxs       string // List of consecutive increasing indices separated by a semicolon.
 }
 
-// loc is a helper struct to build pprofile.ProfilesDictionary.location_table.
+// loc is a helper struct to build profilespb.ProfilesDictionary.location_table.
 type loc struct {
 	mappingIdx int32
 	address    uint64
@@ -62,7 +64,7 @@ type loc struct {
 	attrIdxs   string // List of consecutive increasing indices separated by a semicolon.
 }
 
-// lookupTables is a helper struct around pprofile.ProfilesDictionary.
+// lookupTables is a helper struct around profilespb.ProfilesDictionary.
 type lookupTables struct {
 	mappingTable        map[mm]int32
 	lastMappingTableIdx int32
@@ -86,40 +88,43 @@ type lookupTables struct {
 	lastStackTableIdx int32
 }
 
-func convertPprofToPprofile(src *profile.Profile) (*pprofile.Profiles, error) {
+func convertPprofToOTLPRequest(src *profile.Profile) (*collectorprofilespb.ExportProfilesServiceRequest, error) {
 	if err := src.CheckValid(); err != nil {
 		return nil, fmt.Errorf("%w: %w", err, errInvalPprof)
 	}
-	dst := pprofile.NewProfiles()
 
-	// Initialize remaining lookup tables of pprofile.ProfilesDictionary in initLookupTables.
+	// Initialize remaining lookup tables of profilespb.ProfilesDictionary in initLookupTables.
 	lts := initLookupTables()
 
 	// Add envelope messages
-	rp := dst.ResourceProfiles().AppendEmpty()
-	rp.SetSchemaUrl(semconv.SchemaURL)
+	rp := &profilespb.ResourceProfiles{
+		Resource:  &resourcepb.Resource{},
+		SchemaUrl: semconv.SchemaURL,
+		ScopeProfiles: []*profilespb.ScopeProfiles{
+			{SchemaUrl: semconv.SchemaURL},
+		},
+	}
+	sp := rp.ScopeProfiles[0]
 
-	sp := rp.ScopeProfiles().AppendEmpty()
-	sp.SetSchemaUrl(semconv.SchemaURL)
-
-	// Use a dedicated pprofile.Profile for each sample type.
+	// Use a dedicated OTLP Profile for each pprof sample type.
 	for stIdx, st := range src.SampleType {
-		p := sp.Profiles().AppendEmpty()
+		p := &profilespb.Profile{}
+		sp.Profiles = append(sp.Profiles, p)
 
 		// pprof.Profile.sample_type
-		p.SampleType().SetTypeStrindex(lts.getIdxForString(st.Type))
-		p.SampleType().SetUnitStrindex(lts.getIdxForString(st.Unit))
+		p.SampleType = &profilespb.ValueType{
+			TypeStrindex: lts.getIdxForString(st.Type),
+			UnitStrindex: lts.getIdxForString(st.Unit),
+		}
 
 		// pprof.Profile.sample
 		for _, sample := range src.Sample {
-			s := p.Sample().AppendEmpty()
-
-			// pprof.Sample.location_id
-			stackIdx := lts.getIdxForStack(sample.Location)
-			s.SetStackIndex(stackIdx)
-
-			// pprof.Sample.value
-			s.Values().Append(sample.Value[stIdx])
+			s := &profilespb.Sample{
+				// pprof.Sample.location_id
+				StackIndex: lts.getIdxForStack(sample.Location),
+				// pprof.Sample.value
+				Values: []int64{sample.Value[stIdx]},
+			}
 
 			// pprof.Sample.label - this field is split into string and numeric labels.
 			for lk, lv := range sample.Label {
@@ -127,14 +132,15 @@ func convertPprofToPprofile(src *profile.Profile) (*pprofile.Profiles, error) {
 					return nil, fmt.Errorf("invalid length of string label value %d: %w",
 						len(lv), errInvalPprof)
 				}
+				labelValue := lv[0]
 				var idx int32
 				lu, exist := sample.NumUnit[lk]
 				if !exist {
-					idx = lts.getIdxForAttribute(lk, lv)
+					idx = lts.getIdxForAttribute(lk, labelValue)
 				} else {
-					idx = lts.getIdxForAttributeWithUnit(lk, lu[0], lv)
+					idx = lts.getIdxForAttributeWithUnit(lk, lu[0], labelValue)
 				}
-				s.AttributeIndices().Append(idx)
+				s.AttributeIndices = append(s.AttributeIndices, idx)
 			}
 
 			for lk, lv := range sample.NumLabel {
@@ -142,72 +148,70 @@ func convertPprofToPprofile(src *profile.Profile) (*pprofile.Profiles, error) {
 					return nil, fmt.Errorf("invalid length of numeric label value %d: %w",
 						len(lv), errInvalPprof)
 				}
+				labelValue := lv[0]
 				var idx int32
 				lu, exist := sample.NumUnit[lk]
 				if !exist {
-					idx = lts.getIdxForAttribute(lk, lv)
+					idx = lts.getIdxForAttribute(lk, labelValue)
 				} else {
-					idx = lts.getIdxForAttributeWithUnit(lk, lu[0], lv)
+					idx = lts.getIdxForAttributeWithUnit(lk, lu[0], labelValue)
 				}
-				s.AttributeIndices().Append(idx)
+				s.AttributeIndices = append(s.AttributeIndices, idx)
 			}
+			p.Samples = append(p.Samples, s)
 		}
 
 		// pprof.Profile.mapping
-		// As OTel pprofile manages its own ProfilesDictionary.mapping_table, there
+		// As OTLP profiles manage their own ProfilesDictionary.mapping_table, there
 		// is no 1 to 1 mapping here.
 
 		// pprof.Profile.location
-		// As OTel pprofile manages its own ProfilesDictionary.location_table, there
+		// As OTLP profiles manage their own ProfilesDictionary.location_table, there
 		// is no 1 to 1 mapping here.
 
 		// pprof.Profile.function
-		// As OTel pprofile manages its own ProfilesDictionary.function_table, there
+		// As OTLP profiles manage their own ProfilesDictionary.function_table, there
 		// is no 1 to 1 mapping here.
 
 		// pprof.Profile.string_table
-		// As OTel pprofile manages its own ProfilesDictionary.string_table, there
+		// As OTLP profiles manage their own ProfilesDictionary.string_table, there
 		// is no 1 to 1 mapping here.
 
 		// pprof.Profile.drop_frames
 		dropFramesIdx := lts.getIdxForAttribute("drop_frames", src.DropFrames)
-		p.AttributeIndices().Append(dropFramesIdx)
+		p.AttributeIndices = append(p.AttributeIndices, dropFramesIdx)
 
 		// pprof.Profile.keep_frames
 		keepFramesIdx := lts.getIdxForAttribute("keep_frames", src.KeepFrames)
-		p.AttributeIndices().Append(keepFramesIdx)
+		p.AttributeIndices = append(p.AttributeIndices, keepFramesIdx)
 
 		// pprof.Profile.time_nanos
-		p.SetTime(pcommon.Timestamp(src.TimeNanos))
+		p.TimeUnixNano = uint64(src.TimeNanos)
 
 		// pprof.Profile.duration_nanos
-		p.SetDuration(pcommon.Timestamp(src.DurationNanos))
+		p.DurationNano = uint64(src.DurationNanos)
 
 		// pprof.Profile.period_type
-		p.PeriodType().SetTypeStrindex(lts.getIdxForString(src.PeriodType.Type))
-		p.PeriodType().SetUnitStrindex(lts.getIdxForString(src.PeriodType.Unit))
-
-		// pprof.Profile.period
-		p.SetPeriod(src.Period)
-
-		// pprof.Profile.comment
-		for _, c := range src.Comments {
-			idx := lts.getIdxForString(c)
-			p.CommentStrindices().Append(idx)
+		p.PeriodType = &profilespb.ValueType{
+			TypeStrindex: lts.getIdxForString(src.PeriodType.Type),
+			UnitStrindex: lts.getIdxForString(src.PeriodType.Unit),
 		}
 
+		// pprof.Profile.period
+		p.Period = src.Period
+
 		// pprof.Profile.default_sample_type
-		// As OTel pprofile uses a single Sample Type, it is implicit its default type.
+		// As OTLP profiles use a single Sample Type, it is implicit its default type.
 
 		// pprof.Profile.doc_url
 		docURLIdx := lts.getIdxForAttribute("doc_url", src.DocURL)
-		p.AttributeIndices().Append(docURLIdx)
+		p.AttributeIndices = append(p.AttributeIndices, docURLIdx)
 	}
 
-	if err := lts.dumpLookupTables(dst.Dictionary()); err != nil {
-		return nil, err
-	}
-	return &dst, nil
+	return &collectorprofilespb.ExportProfilesServiceRequest{
+		ResourceProfiles: []*profilespb.ResourceProfiles{rp},
+		Dictionary:       lts.dumpLookupTables(),
+	}, nil
 }
 
 // getIdxForFunction returns the corresponding index for the function.
@@ -431,93 +435,80 @@ func initLookupTables() lookupTables {
 	return lts
 }
 
-// dumpLookupTables fills pprofile.ProfilesDictionary with the content of
+// dumpLookupTables fills profilespb.ProfilesDictionary with the content of
 // the supporting lookup tables.
-func (lts *lookupTables) dumpLookupTables(dic pprofile.ProfilesDictionary) error {
-	for i := 0; i < len(lts.functionTable); i++ {
-		dic.FunctionTable().AppendEmpty()
+func (lts *lookupTables) dumpLookupTables() *profilespb.ProfilesDictionary {
+	for fn := range lts.functionTable {
+		lts.getIdxForString(fn.name)
+		lts.getIdxForString(fn.systemName)
+		lts.getIdxForString(fn.fileName)
+	}
+
+	dic := &profilespb.ProfilesDictionary{
+		FunctionTable:  make([]*profilespb.Function, tableSize(lts.functionTable)),
+		MappingTable:   make([]*profilespb.Mapping, tableSize(lts.mappingTable)),
+		LocationTable:  make([]*profilespb.Location, tableSize(lts.locationTable)),
+		StackTable:     make([]*profilespb.Stack, tableSize(lts.stackTable)),
+		StringTable:    make([]string, tableSize(lts.stringTable)),
+		AttributeTable: make([]*profilespb.KeyValueAndUnit, tableSize(lts.attributeTable)),
+		LinkTable:      []*profilespb.Link{{}},
 	}
 	for fn, id := range lts.functionTable {
-		dic.FunctionTable().At(int(id)).SetNameStrindex(lts.getIdxForString(fn.name))
-		dic.FunctionTable().At(int(id)).SetSystemNameStrindex(lts.getIdxForString(fn.systemName))
-		dic.FunctionTable().At(int(id)).SetFilenameStrindex(lts.getIdxForString(fn.fileName))
-		dic.FunctionTable().At(int(id)).SetStartLine(fn.startLine)
-	}
-
-	for i := 0; i < len(lts.mappingTable); i++ {
-		dic.MappingTable().AppendEmpty()
+		dic.FunctionTable[int(id)] = &profilespb.Function{
+			NameStrindex:       lts.getIdxForString(fn.name),
+			SystemNameStrindex: lts.getIdxForString(fn.systemName),
+			FilenameStrindex:   lts.getIdxForString(fn.fileName),
+			StartLine:          fn.startLine,
+		}
 	}
 	for m, id := range lts.mappingTable {
-		dic.MappingTable().At(int(id)).SetMemoryStart(m.memoryStart)
-		dic.MappingTable().At(int(id)).SetMemoryLimit(m.memoryLimit)
-		dic.MappingTable().At(int(id)).SetFileOffset(m.fileOffset)
-		dic.MappingTable().At(int(id)).SetFilenameStrindex(m.filenameStrIdx)
-		attrIndices, err := stringToAttrIdx(m.attrIdxs)
-		if err != nil {
-			return err
+		dic.MappingTable[int(id)] = &profilespb.Mapping{
+			MemoryStart:      m.memoryStart,
+			MemoryLimit:      m.memoryLimit,
+			FileOffset:       m.fileOffset,
+			FilenameStrindex: m.filenameStrIdx,
+			AttributeIndices: stringToAttrIdx(m.attrIdxs),
 		}
-		dic.MappingTable().At(int(id)).AttributeIndices().Append(attrIndices...)
-	}
-
-	for i := 0; i < len(lts.locationTable); i++ {
-		dic.LocationTable().AppendEmpty()
 	}
 	for l, id := range lts.locationTable {
-		dic.LocationTable().At(int(id)).SetAddress(l.address)
-		dic.LocationTable().At(int(id)).SetMappingIndex(l.mappingIdx)
-		lines, err := stringToLine(l.lines)
-		if err != nil {
-			return err
+		dic.LocationTable[int(id)] = &profilespb.Location{
+			Address:          l.address,
+			MappingIndex:     l.mappingIdx,
+			Lines:            stringToLine(l.lines),
+			AttributeIndices: stringToAttrIdx(l.attrIdxs),
 		}
-		for _, ln := range lines {
-			newLine := dic.LocationTable().At(int(id)).Line().AppendEmpty()
-			newLine.SetLine(ln.Line())
-			newLine.SetColumn(ln.Column())
-			newLine.SetFunctionIndex(ln.FunctionIndex())
-		}
-		attrIdxs, err := stringToAttrIdx(l.attrIdxs)
-		if err != nil {
-			return err
-		}
-		dic.LocationTable().At(int(id)).AttributeIndices().Append(attrIdxs...)
-	}
-
-	for i := 0; i < len(lts.stackTable); i++ {
-		dic.StackTable().AppendEmpty()
 	}
 	for s, id := range lts.stackTable {
-		locIndices, err := stringToAttrIdx(s)
-		if err != nil {
-			return err
+		dic.StackTable[int(id)] = &profilespb.Stack{
+			LocationIndices: stringToAttrIdx(s),
 		}
-		dic.StackTable().At(int(id)).LocationIndices().Append(locIndices...)
-	}
-
-	for i := 0; i < len(lts.stringTable); i++ {
-		dic.StringTable().Append("")
 	}
 	for s, id := range lts.stringTable {
-		dic.StringTable().SetAt(int(id), s)
-	}
-
-	for i := 0; i < len(lts.attributeTable); i++ {
-		dic.AttributeTable().AppendEmpty()
+		dic.StringTable[int(id)] = s
 	}
 	for a, id := range lts.attributeTable {
-		dic.AttributeTable().At(int(id)).SetKeyStrindex(a.keyStrIdx)
-		if err := dic.AttributeTable().At(int(id)).Value().FromRaw(a.value); err != nil {
-			return err
-		}
+		unitStrIdx := int32(0)
 		if a.unitStrIdx != noAttrUnit {
-			dic.AttributeTable().At(int(id)).SetUnitStrindex(a.unitStrIdx)
+			unitStrIdx = a.unitStrIdx
+		}
+		dic.AttributeTable[int(id)] = &profilespb.KeyValueAndUnit{
+			KeyStrindex:  a.keyStrIdx,
+			Value:        anyValueFromRaw(a.value),
+			UnitStrindex: unitStrIdx,
 		}
 	}
 
-	// The concept of profiles.Link does not exist in pprof.
-	// Therefore LinkTable only holds an empty value to be compliant.
-	dic.LinkTable().AppendEmpty()
+	return dic
+}
 
-	return nil
+func tableSize[K comparable](table map[K]int32) int {
+	var maxID int32
+	for _, id := range table {
+		if id > maxID {
+			maxID = id
+		}
+	}
+	return int(maxID) + 1
 }
 
 // attrIdxToString is a helper function to convert a list of indices
@@ -539,25 +530,18 @@ func attrIdxToString(indices []int32) string {
 
 // stringToAttrIdx is a helper function to convert a string into
 // a list of indices.
-func stringToAttrIdx(indices string) ([]int32, error) {
+func stringToAttrIdx(indices string) []int32 {
 	if indices == "" {
-		return []int32{}, nil
+		return []int32{}
 	}
 	parts := strings.Split(indices, ";")
 
 	result := make([]int32, 0, len(parts))
 	for _, s := range parts {
-		n, err := strconv.ParseInt(s, 10, 32)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse '%s' as int32. %w", s, err)
-		}
+		n, _ := strconv.ParseInt(s, 10, 32)
 		result = append(result, int32(n))
 	}
-	if !slices.IsSorted(result) {
-		return nil, fmt.Errorf("invalid order of indices '%s': %w", indices, errInalIdxFomrat)
-	}
-
-	return result, nil
+	return result
 }
 
 // linesToString is a helper function to convert a list of lines into a string.
@@ -601,41 +585,61 @@ func (lts *lookupTables) linesToString(lines []profile.Line) string {
 }
 
 // stringToLine is a helper function to convert a string into a list of lines.
-func stringToLine(lines string) ([]pprofile.Line, error) {
+func stringToLine(lines string) []*profilespb.Line {
 	if lines == "" {
-		return []pprofile.Line{}, nil
+		return []*profilespb.Line{}
 	}
 
 	parts := strings.Split(lines, ";")
-	result := make([]pprofile.Line, 0, len(parts))
+	result := make([]*profilespb.Line, 0, len(parts))
 
 	for _, part := range parts {
 		components := strings.Split(part, ":")
 		if len(components) != 3 {
-			return nil, fmt.Errorf("invalid line format '%s': %w", part, errInalIdxFomrat)
+			continue
 		}
 
-		funcID, err := strconv.ParseInt(components[0], 10, 32)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse function ID '%s': %w", components[0], err)
-		}
-
-		lineNum, err := strconv.ParseInt(components[1], 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse line number '%s': %w", components[1], err)
-		}
-
-		column, err := strconv.ParseInt(components[2], 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse column '%s': %w", components[2], err)
-		}
-
-		line := pprofile.NewLine()
-		line.SetFunctionIndex(int32(funcID))
-		line.SetLine(lineNum)
-		line.SetColumn(column)
-
-		result = append(result, line)
+		funcID, _ := strconv.ParseInt(components[0], 10, 32)
+		lineNum, _ := strconv.ParseInt(components[1], 10, 64)
+		column, _ := strconv.ParseInt(components[2], 10, 64)
+		result = append(result, &profilespb.Line{
+			FunctionIndex: int32(funcID),
+			Line:          lineNum,
+			Column:        column,
+		})
 	}
-	return result, nil
+	return result
+}
+
+func anyValueFromRaw(value any) *commonpb.AnyValue {
+	switch v := value.(type) {
+	case string:
+		return stringAnyValue(v)
+	case bool:
+		return &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: v}}
+	case int:
+		return &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(v)}}
+	case int32:
+		return &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(v)}}
+	case int64:
+		return &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: v}}
+	case uint:
+		return &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(v)}}
+	case uint32:
+		return &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(v)}}
+	case uint64:
+		return &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(v)}}
+	case float32:
+		return &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: float64(v)}}
+	case float64:
+		return &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: v}}
+	case []byte:
+		return &commonpb.AnyValue{Value: &commonpb.AnyValue_BytesValue{BytesValue: v}}
+	default:
+		return stringAnyValue(fmt.Sprint(v))
+	}
+}
+
+func stringAnyValue(value string) *commonpb.AnyValue {
+	return &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: value}}
 }

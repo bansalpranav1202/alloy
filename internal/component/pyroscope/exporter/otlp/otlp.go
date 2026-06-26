@@ -13,8 +13,10 @@ import (
 	"github.com/google/pprof/profile"
 	"github.com/grafana/alloy/internal/component/pyroscope"
 	"github.com/prometheus/prometheus/model/labels"
-	"go.opentelemetry.io/collector/pdata/pprofile"
-	"go.opentelemetry.io/collector/pdata/pprofile/pprofileotlp"
+	collectorprofilespb "go.opentelemetry.io/proto/otlp/collector/profiles/v1development"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	profilespb "go.opentelemetry.io/proto/otlp/profiles/v1development"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -96,7 +98,7 @@ func (c *Component) Update(args Arguments) error {
 	}
 	exporter := &otlpExporter{
 		logger:         c.logger,
-		client:         pprofileotlp.NewGRPCClient(conn),
+		client:         collectorprofilespb.NewProfilesServiceClient(conn),
 		timeout:        args.Timeout,
 		externalLabels: args.ExternalLabels,
 	}
@@ -127,7 +129,7 @@ func dial(args Arguments) (*grpc.ClientConn, error) {
 
 type otlpExporter struct {
 	logger         log.Logger
-	client         pprofileotlp.GRPCClient
+	client         collectorprofilespb.ProfilesServiceClient
 	timeout        time.Duration
 	externalLabels map[string]string
 }
@@ -147,7 +149,7 @@ func (e *otlpExporter) Append(ctx context.Context, lbs labels.Labels, samples []
 			errs = errors.Join(errs, err)
 			continue
 		}
-		if err := e.exportProfiles(ctx, *profiles); err != nil {
+		if err := e.exportProfiles(ctx, profiles); err != nil {
 			errs = errors.Join(errs, err)
 		}
 	}
@@ -162,49 +164,57 @@ func (e *otlpExporter) AppendIngest(ctx context.Context, incoming *pyroscope.Inc
 	if err != nil {
 		return err
 	}
-	return e.exportProfiles(ctx, *profiles)
+	return e.exportProfiles(ctx, profiles)
 }
 
-func (e *otlpExporter) rawSampleToProfiles(raw []byte, lbs labels.Labels) (*pprofile.Profiles, error) {
+func (e *otlpExporter) rawSampleToProfiles(raw []byte, lbs labels.Labels) (*collectorprofilespb.ExportProfilesServiceRequest, error) {
 	pprofProfile, err := profile.ParseData(raw)
 	if err != nil {
 		return nil, fmt.Errorf("parse pprof profile: %w", err)
 	}
-	profiles, err := convertPprofToPprofile(pprofProfile)
+	req, err := convertPprofToOTLPRequest(pprofProfile)
 	if err != nil {
 		return nil, fmt.Errorf("convert pprof to otlp profiles: %w", err)
 	}
-	addResourceAttributes(*profiles, lbs, e.externalLabels)
-	return profiles, nil
+	addResourceAttributes(req, lbs, e.externalLabels)
+	return req, nil
 }
 
-func (e *otlpExporter) exportProfiles(ctx context.Context, profiles pprofile.Profiles) error {
+func (e *otlpExporter) exportProfiles(ctx context.Context, req *collectorprofilespb.ExportProfilesServiceRequest) error {
 	exportCtx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
-	_, err := e.client.Export(exportCtx, pprofileotlp.NewExportRequestFromProfiles(profiles))
+	_, err := e.client.Export(exportCtx, req)
 	if err != nil {
 		return fmt.Errorf("export otlp profiles: %w", err)
 	}
-	level.Debug(e.logger).Log("msg", "exported otlp profiles", "resource_profiles", profiles.ResourceProfiles().Len())
+	level.Debug(e.logger).Log("msg", "exported otlp profiles", "resource_profiles", len(req.ResourceProfiles))
 	return nil
 }
 
-func addResourceAttributes(profiles pprofile.Profiles, lbs labels.Labels, externalLabels map[string]string) {
-	resourceProfiles := profiles.ResourceProfiles()
-	if resourceProfiles.Len() == 0 {
-		resourceProfiles.AppendEmpty()
+func addResourceAttributes(req *collectorprofilespb.ExportProfilesServiceRequest, lbs labels.Labels, externalLabels map[string]string) {
+	if len(req.ResourceProfiles) == 0 {
+		req.ResourceProfiles = append(req.ResourceProfiles, &profilespb.ResourceProfiles{})
 	}
-	for i := 0; i < resourceProfiles.Len(); i++ {
-		attrs := resourceProfiles.At(i).Resource().Attributes()
+	for _, rp := range req.ResourceProfiles {
+		if rp.Resource == nil {
+			rp.Resource = &resourcepb.Resource{}
+		}
 		for k, v := range externalLabels {
-			attrs.PutStr(k, v)
+			rp.Resource.Attributes = append(rp.Resource.Attributes, stringKeyValue(k, v))
 		}
 		lbs.Range(func(l labels.Label) {
 			if l.Name == "" {
 				return
 			}
-			attrs.PutStr(l.Name, l.Value)
+			rp.Resource.Attributes = append(rp.Resource.Attributes, stringKeyValue(l.Name, l.Value))
 		})
+	}
+}
+
+func stringKeyValue(key, value string) *commonpb.KeyValue {
+	return &commonpb.KeyValue{
+		Key:   key,
+		Value: stringAnyValue(value),
 	}
 }
